@@ -2,18 +2,6 @@
   <div class="p-4">
     <div class="mb-6 bg-white rounded-lg shadow p-4">
       <h2 class="text-xl font-bold mb-4">课本背诵</h2>
-      
-      <!-- 学生选择 -->
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-gray-700 mb-2">选择学生</label>
-        <Dropdown
-          v-model="selectedStudent"
-          :options="students"
-          optionLabel="name"
-          placeholder="请选择学生"
-          class="w-full"
-        />
-      </div>
 
       <!-- 题目选择 -->
       <div class="mb-4">
@@ -23,6 +11,18 @@
           :options="questions"
           optionLabel="title"
           placeholder="请选择题目"
+          class="w-full"
+        />
+      </div>
+
+      <!-- 学生选择 -->
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-gray-700 mb-2">选择学生</label>
+        <Dropdown
+          v-model="selectedStudent"
+          :options="students"
+          optionLabel="name"
+          placeholder="请选择学生"
           class="w-full"
         />
       </div>
@@ -59,9 +59,12 @@
             <div>
               <span class="font-medium">{{ recording.studentName }}</span>
               <span class="text-gray-500 text-sm ml-2">({{ recording.duration }}秒)</span>
+              <span v-if="recording.check_result === 'checked'" class="ml-2 text-blue-600">
+                得分: {{ recording.score }}
+              </span>
             </div>
-            <span :class="['px-2 py-1 rounded text-sm', recording.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800']">
-              {{ recording.status === 'pending' ? '待检查' : '已检查' }}
+            <span :class="['px-2 py-1 rounded text-sm', recording.check_result === 'pending' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800']">
+              {{ recording.check_result === 'checked' ? '已检查' : '待检查' }}
             </span>
           </div>
         </div>
@@ -71,7 +74,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import Button from 'primevue/button'
 import Dropdown from 'primevue/dropdown'
 
@@ -114,8 +117,44 @@ const recordingComplete = ref(false)
 const recordings = ref([])
 const mediaRecorder = ref(null)
 const audioChunks = ref([])
+const pollingInterval = ref(null) // 用于存储轮询定时器
 
-const hasRecordings = computed(() => recordings.value.length > 0)
+const hasRecordings = computed(() => 
+  selectedQuestion.value?.id && recordings.value.length > 0
+)
+
+// 检查是否所有录音都已完成检查
+const allRecordingsChecked = computed(() => 
+  recordings.value.length > 0 && recordings.value.every(recording => recording.check_result === 'checked')
+)
+
+// 添加 watch 来监听选中题目的变化
+watch(selectedQuestion, async (newQuestion) => {
+  if (newQuestion?.id) {
+    await fetchRecordedStudents(newQuestion.id)
+  } else {
+    recordings.value = []
+  }
+})
+
+// 获取已录制学生列表
+async function fetchRecordedStudents(questionId) {
+  try {
+    const response = await fetch(`/api/recordings/${questionId}`)
+    if (response.ok) {
+      const data = await response.json()
+      recordings.value = data.map(recording => ({
+        id: recording.id,
+        studentName: recording.student_name,
+        duration: recording.duration,
+        check_result: recording.check_result || 'pending',
+        score: recording.score
+      }))
+    }
+  } catch (error) {
+    console.error('获取已录制学生列表失败:', error)
+  }
+}
 
 // 开始/结束录音
 async function toggleRecording() {
@@ -175,7 +214,8 @@ async function toggleRecording() {
               id: Date.now(),
               studentName: selectedStudent.value.name,
               duration: data.duration,
-              status: 'pending'
+              check_result: 'pending',
+              score: null
             })
             recordingComplete.value = true
           }
@@ -206,20 +246,40 @@ function resetRecording() {
 // 批量检查录音
 async function batchCheck() {
   try {
-    const response = await fetch('/api/recordings/batch-check', {
-      method: 'POST'
-    })
+    const response = await fetch(`/api/recordings/batch-check/${selectedQuestion.value?.id}`)
 
     if (response.ok) {
-      const results = await response.json()
-      // 更新录音状态
-      recordings.value = recordings.value.map(recording => ({
-        ...recording,
-        status: 'checked'
-      }))
+      // 开始轮询检查状态
+      startPolling()
     }
   } catch (error) {
     console.error('检查失败:', error)
   }
 }
+
+// 开始轮询
+function startPolling() {
+  // 清除可能存在的之前的轮询
+  if (pollingInterval.value) {
+    clearInterval(pollingInterval.value)
+  }
+
+  // 设置新的轮询
+  pollingInterval.value = setInterval(async () => {
+    await fetchRecordedStudents(selectedQuestion.value?.id)
+    
+    // 如果所有录音都已检查完成，停止轮询
+    if (allRecordingsChecked.value) {
+      clearInterval(pollingInterval.value)
+      pollingInterval.value = null
+    }
+  }, 5000) // 每5秒轮询一次
+}
+
+// 在组件卸载时清除轮询
+onUnmounted(() => {
+  if (pollingInterval.value) {
+    clearInterval(pollingInterval.value)
+  }
+})
 </script>
